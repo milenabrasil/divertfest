@@ -1,0 +1,26 @@
+{
+  "name": "divertfest",
+  "version": "1.0.0",
+  "description": "",
+  "main": "backend/index.js",
+  "scripts": {
+    "start": "node --env-file=backend/.env backend/index.js",
+    "dev": "node --watch --env-file=backend/.env backend/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/milenabrasil/divertfest.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/milenabrasil/divertfest/issues"
+  },
+  "homepage": "https://github.com/milenabrasil/divertfest#readme",
+  "dependencies": {
+    "express": "^5.2.1",
+    "pg": "^8.23.0"
+  }
+}
