@@ -95,15 +95,18 @@ const login = async (email, senha) => {
         throw new AppError('E-mail ou senha inválidos', 401);
     }
 
+
     const token = jwt.sign(
         {
-            id: cliente.id
+            id: cliente.id,
+            tipo: 'cliente'
         },
         process.env.JWT_SECRET,
         {
             expiresIn: '1d'
         }
     );
+
 
     return {
         token,
@@ -205,6 +208,6 @@ module.exports = {
     criarCliente,
     login,
     buscarPerfil,
-    atualizarPerfil 
+    atualizarPerfil
 
 };
