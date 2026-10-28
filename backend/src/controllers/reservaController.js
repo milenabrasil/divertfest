@@ -1,10 +1,12 @@
 const reservaService = require('../services/reservaService');
 
+
 const criar = async (req, res) => {
     const {
         id_endereco,
         data_inicio,
         data_fim,
+        hora_inicio,
         itens
     } = req.body;
 
@@ -13,11 +15,13 @@ const criar = async (req, res) => {
         id_endereco,
         data_inicio,
         data_fim,
+        hora_inicio,
         itens
     );
 
     return res.status(201).json(reserva);
 };
+
 
 const listarMinhas = async (req, res) => {
     const reservas =

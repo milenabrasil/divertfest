@@ -4,13 +4,25 @@ const enderecoRepository = require('../repositories/enderecoRepository');
 const AppError = require('../middlewares/AppError');
 const contratoRepository = require('../repositories/contratoRepository');
 
+
 const criarReserva = async (
     idCliente,
     idEndereco,
     dataInicio,
     dataFim,
+    horaInicio,
     itens
 ) => {
+    if (
+        typeof horaInicio !== 'string' ||
+        !/^([01]\d|2[0-3]):[0-5]\d$/.test(horaInicio)
+    ) {
+        throw new AppError(
+            'Informe um horário de início válido no formato HH:mm',
+            400
+        );
+    }
+
     if (!idEndereco) {
         throw new AppError('O endereço é obrigatório', 400);
     }
@@ -29,6 +41,36 @@ const criarReserva = async (
         );
     }
 
+
+    const validarData = (data) => {
+        if (
+            typeof data !== 'string' ||
+            !/^\d{4}-\d{2}-\d{2}$/.test(data)
+        ) {
+            return false;
+        }
+
+        const [ano, mes, dia] = data.split('-').map(Number);
+
+        const dataVerificada = new Date(
+            Date.UTC(ano, mes - 1, dia)
+        );
+
+        return (
+            dataVerificada.getUTCFullYear() === ano &&
+            dataVerificada.getUTCMonth() === mes - 1 &&
+            dataVerificada.getUTCDate() === dia
+        );
+    };
+
+    if (!validarData(dataInicio) || !validarData(dataFim)) {
+        throw new AppError(
+            'Informe datas válidas no formato AAAA-MM-DD',
+            400
+        );
+    }
+
+
     const inicio = new Date(`${dataInicio}T00:00:00`);
     const fim = new Date(`${dataFim}T00:00:00`);
 
@@ -45,6 +87,34 @@ const criarReserva = async (
             400
         );
     }
+
+
+    const resultadoHorario = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Bahia',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23'
+    }).formatToParts(new Date());
+
+    const partes = Object.fromEntries(
+        resultadoHorario.map(({ type, value }) => [type, value])
+    );
+
+    const agoraBahia =
+        `${partes.year}-${partes.month}-${partes.day}T${partes.hour}:${partes.minute}`;
+
+    const inicioLocacao = `${dataInicio}T${horaInicio}`;
+
+    if (inicioLocacao <= agoraBahia) {
+        throw new AppError(
+            'A data e o horário de início da locação devem ser futuros',
+            400
+        );
+    }
+
 
     const endereco =
         await enderecoRepository.buscarPorId(idEndereco);
@@ -127,14 +197,17 @@ const criarReserva = async (
         });
     }
 
+
     return reservaRepository.criarReservaComItens(
         idCliente,
         idEndereco,
         dataInicio,
         dataFim,
+        horaInicio,
         valorTotal,
         itensPreparados
     );
+
 };
 
 const listarMinhasReservas = async (idCliente) => {

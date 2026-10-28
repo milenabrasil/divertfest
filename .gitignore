@@ -5,3 +5,15 @@ node_modules/
 .env
 .env.*
 !.env.example
+
+# Arquivos gerados pelo frontend
+dist/
+build/
+coverage/
+
+# Logs
+*.log
+
+# Arquivos temporários
+*.tmp
+*.bak

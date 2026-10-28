@@ -10,11 +10,13 @@ const {
 
 
 // CRIAR RESERVA
+
 const criarReservaComItens = async (
     idCliente,
     idEndereco,
     dataInicio,
     dataFim,
+    horaInicio,
     valorTotal,
     itens
 ) => {
@@ -23,28 +25,114 @@ const criarReservaComItens = async (
     try {
         await client.query('BEGIN');
 
+        // 1. Bloqueia os brinquedos em ordem fixa para evitar
+        // conflitos entre reservas simultâneas.
+        const itensOrdenados = [...itens].sort(
+            (a, b) => a.id_brinquedo - b.id_brinquedo
+        );
+
+        for (const item of itensOrdenados) {
+            const resultadoBrinquedo = await client.query(
+                `SELECT id, nome, quantidade_total, ativo
+                 FROM brinquedo
+                 WHERE id = $1
+                 FOR UPDATE`,
+                [item.id_brinquedo]
+            );
+
+            const brinquedo = resultadoBrinquedo.rows[0];
+
+            if (!brinquedo || !brinquedo.ativo) {
+                throw new Error(
+                    'Brinquedo não encontrado ou inativo.'
+                );
+            }
+        }
+
+        // 2. Verifica a disponibilidade com os bloqueios ativos.
+        for (const item of itensOrdenados) {
+            const resultadoEstoque = await client.query(
+                `SELECT
+                    b.nome,
+                    b.quantidade_total,
+                    COALESCE(
+                    SUM(ir.quantidade) FILTER (WHERE r.id IS NOT NULL),
+                    0
+                    ) AS quantidade_reservada
+                    FROM brinquedo b
+                 LEFT JOIN item_reserva ir
+                    ON ir.id_brinquedo = b.id
+                 LEFT JOIN reserva r
+                    ON r.id = ir.id_reserva
+                    AND (
+    r.status = 'CONFIRMADA'
+    OR (
+        r.status = 'AGUARDANDO_PAGAMENTO'
+        AND (
+            r.expira_em >
+                (NOW() AT TIME ZONE 'America/Bahia')
+            OR EXISTS (
+                SELECT 1
+                FROM pagamento p
+                WHERE p.id_reserva = r.id
+                  AND p.origem = 'STRIPE'
+                  AND p.status = 'PENDENTE'
+                  AND p.stripe_checkout_session_id IS NOT NULL
+            )
+        )
+    )
+)
+                    AND r.data_inicio <= $2
+                    AND r.data_fim >= $3
+                 WHERE b.id = $1
+                 GROUP BY b.id, b.nome, b.quantidade_total`,
+                [
+                    item.id_brinquedo,
+                    dataFim,
+                    dataInicio
+                ]
+            );
+
+            const estoque = resultadoEstoque.rows[0];
+
+            const quantidadeDisponivel =
+                Number(estoque.quantidade_total) -
+                Number(estoque.quantidade_reservada);
+
+            if (item.quantidade > quantidadeDisponivel) {
+                throw new AppError(
+                    `Quantidade indisponível para ${estoque.nome}.`,
+                    409
+                );
+            }
+        }
+
+        // 3. Cria a reserva.
         const resultadoReserva = await client.query(
             `INSERT INTO reserva (
                 id_cliente,
                 id_endereco,
                 data_inicio,
                 data_fim,
+                hora_inicio,
                 valor_total
             )
-            VALUES ($1, $2, $3, $4, $5)
+            VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING *`,
             [
                 idCliente,
                 idEndereco,
                 dataInicio,
                 dataFim,
+                horaInicio,
                 valorTotal
             ]
         );
 
         const reserva = resultadoReserva.rows[0];
 
-        for (const item of itens) {
+        // 4. Insere os brinquedos da reserva.
+        for (const item of itensOrdenados) {
             await client.query(
                 `INSERT INTO item_reserva (
                     id_reserva,
@@ -90,12 +178,63 @@ const buscarPorId = async (idReserva) => {
             e.numero,
             e.bairro,
             e.cidade,
-            e.complemento
+            e.complemento,
+
+            COALESCE(
+                financeiro.total_pago_validado, 0
+            ) AS total_pago_validado,
+
+            GREATEST(
+                r.valor_total -
+                COALESCE(financeiro.total_pago_validado, 0),
+                0
+            ) AS saldo_restante,
+
+            CASE
+                WHEN COALESCE(
+                    financeiro.pagamentos_nao_validados, 0
+                ) > 0
+                    THEN 'EM_ANALISE'
+
+                WHEN COALESCE(
+                    financeiro.total_pago_validado, 0
+                ) >= r.valor_total
+                    THEN 'QUITADA'
+
+                WHEN COALESCE(
+                    financeiro.total_pago_validado, 0
+                ) > 0
+                    THEN 'PARCIALMENTE_PAGA'
+
+                ELSE 'NAO_PAGA'
+            END AS situacao_financeira
+
          FROM reserva r
+
          INNER JOIN cliente c
-            ON c.id = r.id_cliente
+             ON c.id = r.id_cliente
+
          INNER JOIN endereco e
-            ON e.id = r.id_endereco
+             ON e.id = r.id_endereco
+
+         LEFT JOIN LATERAL (
+             SELECT
+                 COALESCE(
+                     SUM(p.valor) FILTER (
+                         WHERE p.validacao_financeira = 'VALIDADO'
+                     ), 0
+                 ) AS total_pago_validado,
+
+                 COUNT(*) FILTER (
+                     WHERE p.validacao_financeira
+                           IS DISTINCT FROM 'VALIDADO'
+                 ) AS pagamentos_nao_validados
+
+             FROM pagamento p
+             WHERE p.id_reserva = r.id
+               AND p.status = 'PAGO'
+         ) financeiro ON TRUE
+
          WHERE r.id = $1`,
         [idReserva]
     );
@@ -105,40 +244,71 @@ const buscarPorId = async (idReserva) => {
 
 
 
-// BUSCAR ITENS DA RESERVA
-const buscarItensPorReserva = async (idReserva) => {
-    const resultado = await pool.query(
-        `SELECT
-            ir.id,
-            ir.id_reserva,
-            ir.id_brinquedo,
-            b.nome AS nome_brinquedo,
-            ir.quantidade,
-            ir.preco_unitario
-         FROM item_reserva ir
-         INNER JOIN brinquedo b
-            ON b.id = ir.id_brinquedo
-         WHERE ir.id_reserva = $1
-         ORDER BY ir.id`,
-        [idReserva]
-    );
-
-    return resultado.rows;
-};
-
-
 // LISTAR RESERVAS DO CLIENTE
+
 const buscarPorCliente = async (idCliente) => {
     const resultado = await pool.query(
-        `SELECT *
-         FROM reserva
-         WHERE id_cliente = $1
-         ORDER BY criado_em DESC, id DESC`,
+        `SELECT
+            r.*,
+
+            COALESCE(
+                financeiro.total_pago_validado, 0
+            ) AS total_pago_validado,
+
+            GREATEST(
+                r.valor_total -
+                COALESCE(financeiro.total_pago_validado, 0),
+                0
+            ) AS saldo_restante,
+
+            CASE
+                WHEN COALESCE(
+                    financeiro.pagamentos_nao_validados, 0
+                ) > 0
+                    THEN 'EM_ANALISE'
+
+                WHEN COALESCE(
+                    financeiro.total_pago_validado, 0
+                ) >= r.valor_total
+                    THEN 'QUITADA'
+
+                WHEN COALESCE(
+                    financeiro.total_pago_validado, 0
+                ) > 0
+                    THEN 'PARCIALMENTE_PAGA'
+
+                ELSE 'NAO_PAGA'
+            END AS situacao_financeira
+
+         FROM reserva r
+
+         LEFT JOIN LATERAL (
+             SELECT
+                 COALESCE(
+                     SUM(p.valor) FILTER (
+                         WHERE p.validacao_financeira = 'VALIDADO'
+                     ), 0
+                 ) AS total_pago_validado,
+
+                 COUNT(*) FILTER (
+                     WHERE p.validacao_financeira
+                           IS DISTINCT FROM 'VALIDADO'
+                 ) AS pagamentos_nao_validados
+
+             FROM pagamento p
+             WHERE p.id_reserva = r.id
+               AND p.status = 'PAGO'
+         ) financeiro ON TRUE
+
+         WHERE r.id_cliente = $1
+
+         ORDER BY r.criado_em DESC, r.id DESC`,
         [idCliente]
     );
 
     return resultado.rows;
 };
+
 
 
 // LISTAR RESERVAS PENDENTES
@@ -179,10 +349,25 @@ const buscarQuantidadeReservada = async (
          INNER JOIN reserva r
             ON r.id = ir.id_reserva
          WHERE ir.id_brinquedo = $1
-           AND r.status IN (
-               'AGUARDANDO_PAGAMENTO',
-               'CONFIRMADA'
-           )
+           AND (
+    r.status = 'CONFIRMADA'
+    OR (
+        r.status = 'AGUARDANDO_PAGAMENTO'
+        AND (
+            r.expira_em >
+                (NOW() AT TIME ZONE 'America/Bahia')
+            OR EXISTS (
+                SELECT 1
+                FROM pagamento p
+                WHERE p.id_reserva = r.id
+                  AND p.origem = 'STRIPE'
+                  AND p.status = 'PENDENTE'
+                  AND p.stripe_checkout_session_id IS NOT NULL
+            )
+        )
+    )
+)
+)
            AND r.data_inicio <= $3
            AND r.data_fim >= $2`,
         [
@@ -301,10 +486,24 @@ const aprovarReserva = async (idReserva) => {
                  INNER JOIN reserva r
                     ON r.id = ir.id_reserva
                  WHERE ir.id_brinquedo = $1
-                   AND r.status IN (
-                       'AGUARDANDO_PAGAMENTO',
-                       'CONFIRMADA'
-                   )
+                   AND (
+    r.status = 'CONFIRMADA'
+    OR (
+        r.status = 'AGUARDANDO_PAGAMENTO'
+        AND (
+            r.expira_em >
+                (NOW() AT TIME ZONE 'America/Bahia')
+            OR EXISTS (
+                SELECT 1
+                FROM pagamento p
+                WHERE p.id_reserva = r.id
+                  AND p.origem = 'STRIPE'
+                  AND p.status = 'PENDENTE'
+                  AND p.stripe_checkout_session_id IS NOT NULL
+            )
+        )
+    )
+)
                    AND r.data_inicio <= $3
                    AND r.data_fim >= $2`,
                 [
@@ -334,11 +533,13 @@ const aprovarReserva = async (idReserva) => {
         // Aprova a reserva e define o prazo de 1 hora
         const resultadoAtualizacao = await client.query(
             `UPDATE reserva
-             SET status = 'AGUARDANDO_PAGAMENTO',
-                 expira_em = NOW() + INTERVAL '1 hour'
-             WHERE id = $1
-               AND status = 'PENDENTE'
-             RETURNING *`,
+     SET status = 'AGUARDANDO_PAGAMENTO',
+         expira_em =
+             (NOW() AT TIME ZONE 'America/Bahia')
+             + INTERVAL '1 hour'
+     WHERE id = $1
+       AND status = 'PENDENTE'
+     RETURNING *`,
             [idReserva]
         );
 
@@ -380,17 +581,29 @@ const aprovarReserva = async (idReserva) => {
 };
 
 
+
 const expirarReservasVencidas = async () => {
     const resultado = await pool.query(
-        `UPDATE reserva
+        `UPDATE reserva r
          SET status = 'EXPIRADA'
-         WHERE status = 'AGUARDANDO_PAGAMENTO'
-           AND expira_em <= NOW()
-         RETURNING id, status, expira_em`
+         WHERE r.status = 'AGUARDANDO_PAGAMENTO'
+           AND r.expira_em <=
+               (NOW() AT TIME ZONE 'America/Bahia')
+           AND NOT EXISTS (
+               SELECT 1
+               FROM pagamento p
+               WHERE p.id_reserva = r.id
+                 AND p.status = 'PENDENTE'
+                 AND p.origem = 'STRIPE'
+                 AND p.stripe_checkout_session_id IS NOT NULL
+           )
+         RETURNING r.id, r.status, r.expira_em`
     );
 
     return resultado.rows;
 };
+
+
 
 
 const cancelarReservaCliente = async (
@@ -456,6 +669,27 @@ const listarTodasReservas = async (status) => {
          ${filtro}
          ORDER BY r.criado_em DESC, r.id DESC`,
         parametros
+    );
+
+    return resultado.rows;
+};
+
+
+const buscarItensPorReserva = async (idReserva) => {
+    const resultado = await pool.query(
+        `SELECT
+            ir.id,
+            ir.id_reserva,
+            ir.id_brinquedo,
+            b.nome AS nome_brinquedo,
+            ir.quantidade,
+            ir.preco_unitario
+         FROM item_reserva ir
+         INNER JOIN brinquedo b
+             ON b.id = ir.id_brinquedo
+         WHERE ir.id_reserva = $1
+         ORDER BY ir.id`,
+        [idReserva]
     );
 
     return resultado.rows;

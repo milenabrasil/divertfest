@@ -204,10 +204,72 @@ const atualizarPerfil = async (
     );
 };
 
+
+const alterarSenha = async (idCliente, senhaAtual, novaSenha) => {
+    if (
+        typeof senhaAtual !== 'string' ||
+        typeof novaSenha !== 'string' ||
+        !senhaAtual ||
+        !novaSenha
+    ) {
+        throw new AppError(
+            'A senha atual e a nova senha são obrigatórias.',
+            400
+        );
+    }
+
+    if (novaSenha.length < 8) {
+        throw new AppError(
+            'A nova senha deve ter pelo menos 8 caracteres.',
+            400
+        );
+    }
+
+    const cliente = await clienteRepository.buscarPorId(idCliente);
+
+    if (!cliente) {
+        throw new AppError('Cliente não encontrado.', 404);
+    }
+
+    const senhaCorreta = await bcrypt.compare(
+        senhaAtual,
+        cliente.senha
+    );
+
+    if (!senhaCorreta) {
+        throw new AppError('A senha atual está incorreta.', 401);
+    }
+
+    const senhaRepetida = await bcrypt.compare(
+        novaSenha,
+        cliente.senha
+    );
+
+    if (senhaRepetida) {
+        throw new AppError(
+            'A nova senha deve ser diferente da senha atual.',
+            400
+        );
+    }
+
+    const senhaCriptografada = await bcrypt.hash(novaSenha, 10);
+
+    await clienteRepository.atualizarSenha(
+        idCliente,
+        senhaCriptografada
+    );
+
+    return {
+        mensagem: 'Senha alterada com sucesso.'
+    };
+};
+
+
 module.exports = {
     criarCliente,
     login,
     buscarPerfil,
-    atualizarPerfil
+    atualizarPerfil,
+    alterarSenha
 
 };

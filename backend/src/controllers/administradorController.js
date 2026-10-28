@@ -1,7 +1,7 @@
 const administradorService =
     require('../services/administradorService');
 
-
+const AppError = require('../middlewares/AppError');
 const login = async (req, res) => {
     const { usuario, senha } = req.body;
 
@@ -87,6 +87,40 @@ const listarTodasReservas = async (req, res) => {
     });
 };
 
+const pagamentoRepository =
+    require('../repositories/pagamentoRepository');
+
+const listarPagamentosParaAnalise = async (req, res) => {
+    const pagamentos =
+        await pagamentoRepository.listarPagamentosParaAnalise();
+
+    return res.status(200).json({
+        total: pagamentos.length,
+        pagamentos
+    });
+};
+
+
+
+const buscarDetalhesPagamentoParaAnalise = async (req, res) => {
+    const { id } = req.params;
+
+    if (!/^[1-9]\d*$/.test(id)) {
+        throw new AppError('ID do pagamento inválido', 400);
+    }
+
+    const pagamento =
+        await pagamentoRepository.buscarPagamentoParaAnalisePorId(id);
+
+    if (!pagamento) {
+        throw new AppError(
+            'Pagamento para análise não encontrado',
+            404
+        );
+    }
+
+    return res.status(200).json(pagamento);
+};
 
 module.exports = {
     login,
@@ -95,5 +129,8 @@ module.exports = {
     recusarReserva,
     aprovarReserva,
     concluirReserva,
-    listarTodasReservas
+    listarTodasReservas,
+    listarPagamentosParaAnalise,
+    buscarDetalhesPagamentoParaAnalise
+    
 };

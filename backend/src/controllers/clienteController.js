@@ -58,9 +58,24 @@ const atualizarPerfil = async (req, res) => {
     return res.status(200).json(cliente);
 };
 
+
+const alterarSenha = async (req, res) => {
+    const { senhaAtual, novaSenha } = req.body;
+
+    const resultado = await clienteService.alterarSenha(
+        req.clienteId,
+        senhaAtual,
+        novaSenha
+    );
+
+    return res.status(200).json(resultado);
+};
+
+
 module.exports = {
     criar,
     login,
     buscarPerfil,
-    atualizarPerfil
+    atualizarPerfil,
+    alterarSenha
 };

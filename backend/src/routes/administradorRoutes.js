@@ -66,6 +66,16 @@ router.get(
     administradorController.listarTodasReservas
 );
 
+router.get(
+    '/pagamentos/requerem-analise',
+    adminAuthMiddleware,
+    administradorController.listarPagamentosParaAnalise
+);
 
+router.get(
+    '/pagamentos/requerem-analise/:id',
+    adminAuthMiddleware,
+    administradorController.buscarDetalhesPagamentoParaAnalise
+);
 
 module.exports = router;

@@ -83,11 +83,26 @@ const atualizarCliente = async (
     return resultado.rows[0];
 };
 
+
+const atualizarSenha = async (idCliente, senhaCriptografada) => {
+    const resultado = await pool.query(
+        `UPDATE cliente
+         SET senha = $1
+         WHERE id = $2
+         RETURNING id`,
+        [senhaCriptografada, idCliente]
+    );
+
+    return resultado.rows[0];
+};
+
+
 module.exports = {
     buscarPorId,
     buscarPorEmail,
     buscarPorCpf,
     buscarPorTelefone,
     criarCliente,
-    atualizarCliente
+    atualizarCliente,
+    atualizarSenha
 };
